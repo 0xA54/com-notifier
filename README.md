@@ -13,3 +13,4 @@ You probably don't want this, its windows only, built on a good portion of vibes
  - Change the hard coded PuTTy implementation
  - Figure out baud rates, maybe with the input dialog in the toast
  - Expire toasts
+ - Auto startup
