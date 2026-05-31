@@ -1,0 +1,24 @@
+[package]
+name = "com-notifier"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+features = "0.10.0"
+tokio = { version = "1", features = ["full"]}
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+     "Win32_System_Registry",
+     "Win32_UI_WindowsAndMessaging",
+     "Win32_Devices_DeviceAndDriverInstallation",
+      "Win32_Graphics_Gdi",
+          "Win32_UI_Shell",
+          "Win32_System_Com",
+]}
+
+windows = { version = "0.56", features = [
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Foundation",
+] }
