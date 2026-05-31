@@ -188,45 +188,47 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_DEVICECHANGE {
-        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WatcherState;
+    unsafe {
+        if msg == WM_DEVICECHANGE {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WatcherState;
 
-        // Guard: user-data is set to 0 until we call SetWindowLongPtrW after
-        // CreateWindowExW returns, and lparam may be 0 for some WM_DEVICECHANGE
-        // sub-events (e.g. DBT_DEVNODES_CHANGED).
-        if !state_ptr.is_null() && lparam != 0 {
-            match wparam as u32 {
-                DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE => {
-                    // Read the broadcast header to confirm device type.
-                    // DEV_BROADCAST_DEVICEINTERFACE_W starts with the same
-                    // three DWORD fields as DEV_BROADCAST_HDR, so this cast is safe.
-                    let hdr = &*(lparam as *const DEV_BROADCAST_DEVICEINTERFACE_W);
+            // Guard: user-data is set to 0 until we call SetWindowLongPtrW after
+            // CreateWindowExW returns, and lparam may be 0 for some WM_DEVICECHANGE
+            // sub-events (e.g. DBT_DEVNODES_CHANGED).
+            if !state_ptr.is_null() && lparam != 0 {
+                match wparam as u32 {
+                    DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE => {
+                        // Read the broadcast header to confirm device type.
+                        // DEV_BROADCAST_DEVICEINTERFACE_W starts with the same
+                        // three DWORD fields as DEV_BROADCAST_HDR, so this cast is safe.
+                        let hdr = &*(lparam as *const DEV_BROADCAST_DEVICEINTERFACE_W);
 
-                    if hdr.dbcc_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
-                        let state = &mut *state_ptr;
-                        let current = snapshot_com_ports();
+                        if hdr.dbcc_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
+                            let state = &mut *state_ptr;
+                            let current = snapshot_com_ports();
 
-                        if wparam as u32 == DBT_DEVICEARRIVAL {
-                            // Newly appeared ports
-                            for port in current.difference(&state.known_ports) {
-                                let _ = state.tx.try_send(ComPortEvent::Attached(port.clone()));
+                            if wparam as u32 == DBT_DEVICEARRIVAL {
+                                // Newly appeared ports
+                                for port in current.difference(&state.known_ports) {
+                                    let _ = state.tx.try_send(ComPortEvent::Attached(port.clone()));
+                                }
+                            } else {
+                                // Ports that have vanished
+                                for port in state.known_ports.difference(&current) {
+                                    let _ = state.tx.try_send(ComPortEvent::Detached(port.clone()));
+                                }
                             }
-                        } else {
-                            // Ports that have vanished
-                            for port in state.known_ports.difference(&current) {
-                                let _ = state.tx.try_send(ComPortEvent::Detached(port.clone()));
-                            }
+
+                            state.known_ports = current;
                         }
-
-                        state.known_ports = current;
                     }
+                    _ => {} // DBT_DEVNODES_CHANGED etc. — not interesting here
                 }
-                _ => {} // DBT_DEVNODES_CHANGED etc. — not interesting here
             }
         }
-    }
 
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
 }
 
 /// Inner loop executed on the dedicated OS watcher thread.
@@ -242,99 +244,101 @@ unsafe extern "system" fn wnd_proc(
 /// # Safety
 /// All raw Win32 calls follow their documented contracts.
 unsafe fn run_watcher(tx: mpsc::Sender<ComPortEvent>) {
-    let hinstance = GetModuleHandleW(ptr::null());
+    unsafe {
+        let hinstance = GetModuleHandleW(ptr::null());
 
-    // ── 1. Register window class ─────────────────────────────────────────
-    let mut wc: WNDCLASSEXW = zeroed();
-    wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
-    wc.lpfnWndProc = Some(wnd_proc);
-    wc.hInstance = hinstance;
-    wc.lpszClassName = WATCHER_CLASS_NAME.as_ptr();
+        // ── 1. Register window class ─────────────────────────────────────────
+        let mut wc: WNDCLASSEXW = zeroed();
+        wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+        wc.lpfnWndProc = Some(wnd_proc);
+        wc.hInstance = hinstance;
+        wc.lpszClassName = WATCHER_CLASS_NAME.as_ptr();
 
-    // ERROR_CLASS_ALREADY_EXISTS (1410) is harmless — the class is reused.
-    RegisterClassExW(&wc);
+        // ERROR_CLASS_ALREADY_EXISTS (1410) is harmless — the class is reused.
+        RegisterClassExW(&wc);
 
-    // ── 2. Create a message-only window ──────────────────────────────────
-    let hwnd = CreateWindowExW(
-        0, // dwExStyle
-        WATCHER_CLASS_NAME.as_ptr(),
-        ptr::null(),   // window title (none)
-        WS_OVERLAPPED, // dwStyle (0 — invisible, no chrome)
-        CW_USEDEFAULT, // x
-        CW_USEDEFAULT, // y
-        CW_USEDEFAULT, // width
-        CW_USEDEFAULT, // height
-        HWND_MESSAGE,  // parent = message-only sink
-        0,             // hMenu
-        hinstance,
-        ptr::null(), // lpParam
-    );
+        // ── 2. Create a message-only window ──────────────────────────────────
+        let hwnd = CreateWindowExW(
+            0, // dwExStyle
+            WATCHER_CLASS_NAME.as_ptr(),
+            ptr::null(),   // window title (none)
+            WS_OVERLAPPED, // dwStyle (0 — invisible, no chrome)
+            CW_USEDEFAULT, // x
+            CW_USEDEFAULT, // y
+            CW_USEDEFAULT, // width
+            CW_USEDEFAULT, // height
+            HWND_MESSAGE,  // parent = message-only sink
+            0,             // hMenu
+            hinstance,
+            ptr::null(), // lpParam
+        );
 
-    assert!(
-        hwnd != 0,
-        "CreateWindowExW failed (error {})",
-        GetLastError()
-    );
+        assert!(
+            hwnd != 0,
+            "CreateWindowExW failed (error {})",
+            GetLastError()
+        );
 
-    // ── 3. Attach state to the window's user-data slot ───────────────────
-    //
-    // We Box the state, leak it into a raw pointer, and store that pointer
-    // in GWLP_USERDATA so `wnd_proc` can retrieve it on every callback.
-    // The Box is reconstructed and dropped after the message loop ends.
-    let state = Box::new(WatcherState {
-        tx,
-        known_ports: snapshot_com_ports(),
-    });
-    let state_ptr = Box::into_raw(state);
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        // ── 3. Attach state to the window's user-data slot ───────────────────
+        //
+        // We Box the state, leak it into a raw pointer, and store that pointer
+        // in GWLP_USERDATA so `wnd_proc` can retrieve it on every callback.
+        // The Box is reconstructed and dropped after the message loop ends.
+        let state = Box::new(WatcherState {
+            tx,
+            known_ports: snapshot_com_ports(),
+        });
+        let state_ptr = Box::into_raw(state);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
-    // ── 4. Register for COM-port device-interface notifications ──────────
-    let mut filter: DEV_BROADCAST_DEVICEINTERFACE_W = zeroed();
-    filter.dbcc_size = size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32;
-    filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-    filter.dbcc_classguid = GUID_DEVINTERFACE_COMPORT;
+        // ── 4. Register for COM-port device-interface notifications ──────────
+        let mut filter: DEV_BROADCAST_DEVICEINTERFACE_W = zeroed();
+        filter.dbcc_size = size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32;
+        filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+        filter.dbcc_classguid = GUID_DEVINTERFACE_COMPORT;
 
-    let hnotify = RegisterDeviceNotificationW(
-        hwnd as HANDLE,
-        // The filter struct must be passed as *const c_void.
-        &filter as *const DEV_BROADCAST_DEVICEINTERFACE_W as *const _,
-        DEVICE_NOTIFY_WINDOW_HANDLE,
-    );
+        let hnotify = RegisterDeviceNotificationW(
+            hwnd as HANDLE,
+            // The filter struct must be passed as *const c_void.
+            &filter as *const DEV_BROADCAST_DEVICEINTERFACE_W as *const _,
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        );
 
-    assert!(
-        !hnotify.is_null(),
-        "RegisterDeviceNotificationW failed (error {})",
-        GetLastError()
-    );
+        assert!(
+            !hnotify.is_null(),
+            "RegisterDeviceNotificationW failed (error {})",
+            GetLastError()
+        );
 
-    // ── 5. Message loop ───────────────────────────────────────────────────
-    //
-    // GetMessageW blocks until a message arrives:
-    //   0  → WM_QUIT  (clean exit)
-    //  -1  → error
-    //   n  → normal message, dispatch and continue
-    let mut msg: MSG = zeroed();
-    loop {
-        match GetMessageW(&mut msg, 0, 0, 0) {
-            0 | -1 => break,
-            _ => {
-                DispatchMessageW(&msg);
+        // ── 5. Message loop ───────────────────────────────────────────────────
+        //
+        // GetMessageW blocks until a message arrives:
+        //   0  → WM_QUIT  (clean exit)
+        //  -1  → error
+        //   n  → normal message, dispatch and continue
+        let mut msg: MSG = zeroed();
+        loop {
+            match GetMessageW(&mut msg, 0, 0, 0) {
+                0 | -1 => break,
+                _ => {
+                    DispatchMessageW(&msg);
+                }
+            }
+
+            // Exit cleanly once the consumer has dropped the receiver.
+            if (*state_ptr).tx.is_closed() {
+                break;
             }
         }
 
-        // Exit cleanly once the consumer has dropped the receiver.
-        if (*state_ptr).tx.is_closed() {
-            break;
-        }
+        // ── 6. Cleanup ────────────────────────────────────────────────────────
+        UnregisterDeviceNotification(hnotify);
+
+        // Zero out GWLP_USERDATA before reclaiming the Box so that any stray
+        // WM_DEVICECHANGE fired during teardown sees a null pointer and bails.
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        drop(Box::from_raw(state_ptr));
     }
-
-    // ── 6. Cleanup ────────────────────────────────────────────────────────
-    UnregisterDeviceNotification(hnotify);
-
-    // Zero out GWLP_USERDATA before reclaiming the Box so that any stray
-    // WM_DEVICECHANGE fired during teardown sees a null pointer and bails.
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-    drop(Box::from_raw(state_ptr));
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -384,7 +388,7 @@ async fn main() {
     if args.len() > 1 {
         if let Some(action) = parse_activation_args(&args[1]) {
             match action {
-                Action::OpenPutty { port, baud } => {
+                Action::OpenPutty { port, baud: _ } => {
                     launch_putty(&port);
                 }
             }
@@ -430,7 +434,7 @@ pub fn show_toast(message: &str, port: Option<&str>) -> windows::core::Result<()
             "#
         )
     } else {
-        format!("")
+        String::new()
     };
 
     let toast_xml = format!(
