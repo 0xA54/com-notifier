@@ -363,7 +363,7 @@ fn parse_activation_args(arg: &str) -> Option<Action> {
     let parts: Vec<&str> = arg.split('/').collect();
 
     match parts.as_slice() {
-        ["putty:", _, port, _] => {
+        ["comport:", _, port, _] => {
             // let baud = baud.parse().ok()?;
             Some(Action::OpenPutty {
                 port: port.to_string(),
